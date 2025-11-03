@@ -236,6 +236,29 @@ class MCPServer:
             })
         return tools_list
     
+    def _validate_parameters(self, parameters: Dict[str, Any], schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate parameters against a schema."""
+        # Check required parameters
+        required = schema.get("required", [])
+        for req_param in required:
+            if req_param not in parameters:
+                return {
+                    "valid": False,
+                    "error": f"Missing required parameter: {req_param}"
+                }
+        
+        # Check for unexpected parameters
+        allowed_params = set(schema.get("properties", {}).keys())
+        provided_params = set(parameters.keys())
+        unexpected = provided_params - allowed_params
+        if unexpected:
+            return {
+                "valid": False,
+                "error": f"Unexpected parameters: {', '.join(unexpected)}"
+            }
+        
+        return {"valid": True}
+    
     def execute_tool(self, tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a tool with given parameters."""
         if tool_name not in self.tools:
@@ -246,14 +269,26 @@ class MCPServer:
         
         tool = self.tools[tool_name]
         handler = tool["handler"]
+        tool_schema = tool["parameters"]
+        
+        # Validate parameters against schema
+        validation_result = self._validate_parameters(parameters, tool_schema)
+        if not validation_result["valid"]:
+            return {
+                "error": validation_result["error"],
+                "expected_parameters": tool_schema
+            }
         
         try:
-            result = handler(**parameters)
+            # Only pass validated parameters that are defined in the schema
+            validated_params = {k: v for k, v in parameters.items() 
+                              if k in tool_schema.get("properties", {})}
+            result = handler(**validated_params)
             return result
         except TypeError as e:
             return {
                 "error": f"Invalid parameters: {str(e)}",
-                "expected_parameters": tool["parameters"]
+                "expected_parameters": tool_schema
             }
         except Exception as e:
             return {"error": f"Execution error: {str(e)}"}
