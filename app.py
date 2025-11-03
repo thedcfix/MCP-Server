@@ -4,9 +4,26 @@ Flask web application for MCP Server GUI.
 
 from flask import Flask, render_template, request, jsonify
 from mcp_server import mcp_server
+from security import (
+    rate_limit, 
+    validate_request_json, 
+    add_security_headers,
+    SecurityValidator,
+    ValidationError
+)
 import json
+import os
 
 app = Flask(__name__)
+
+# Security configuration
+app.config['JSON_SORT_KEYS'] = False
+app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024  # 1MB max request size
+
+# Add security headers to all responses
+@app.after_request
+def apply_security_headers(response):
+    return add_security_headers(response)
 
 
 @app.route('/')
@@ -18,6 +35,7 @@ def index():
 
 
 @app.route('/api/tools', methods=['GET'])
+@rate_limit(max_requests=100, window_seconds=60)
 def get_tools():
     """API endpoint to get all available tools."""
     tools = mcp_server.list_tools()
@@ -25,21 +43,48 @@ def get_tools():
 
 
 @app.route('/api/execute', methods=['POST'])
+@rate_limit(max_requests=50, window_seconds=60)
+@validate_request_json()
 def execute_tool():
-    """API endpoint to execute a tool."""
-    data = request.get_json()
-    
-    if not data or 'tool_name' not in data:
-        return jsonify({"error": "tool_name is required"}), 400
-    
-    tool_name = data['tool_name']
-    parameters = data.get('parameters', {})
-    
-    result = mcp_server.execute_tool(tool_name, parameters)
-    return jsonify(result)
+    """API endpoint to execute a tool with comprehensive input validation."""
+    try:
+        data = request.get_json()
+        
+        if not data or 'tool_name' not in data:
+            return jsonify({"error": "tool_name is required"}), 400
+        
+        tool_name = data['tool_name']
+        parameters = data.get('parameters', {})
+        
+        # Validate that tool_name is a string
+        if not isinstance(tool_name, str):
+            return jsonify({"error": "tool_name must be a string"}), 400
+        
+        # Validate that parameters is a dictionary
+        if not isinstance(parameters, dict):
+            return jsonify({"error": "parameters must be an object"}), 400
+        
+        # Execute tool with validation
+        result = mcp_server.execute_tool(tool_name, parameters)
+        return jsonify(result)
+        
+    except ValidationError as e:
+        # ValidationError messages are safe to expose (they're our controlled messages)
+        # The ValidationError class is designed to only contain safe validation
+        # messages, never stack traces or internal system information.
+        # See security.py ValidationError.__str__() for implementation.
+        app.logger.warning(f"Validation error: {type(e).__name__}")
+        # lgtm[py/stack-trace-exposure] - ValidationError only contains safe validation messages
+        error_msg = str(e) if str(e) else "Invalid input parameters"
+        return jsonify({"error": error_msg}), 400
+    except Exception as e:
+        # Log the error but don't expose internal details to users
+        app.logger.error(f"Error executing tool: {type(e).__name__}")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route('/api/server-info', methods=['GET'])
+@rate_limit(max_requests=100, window_seconds=60)
 def get_server_info():
     """API endpoint to get server information."""
     info = mcp_server.get_server_info()
@@ -47,4 +92,6 @@ def get_server_info():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Disable debug mode in production for security
+    debug_mode = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
+    app.run(host='0.0.0.0', port=5000, debug=debug_mode)
