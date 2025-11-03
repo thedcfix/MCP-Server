@@ -6,6 +6,7 @@ import json
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 import math
+from security import SecurityValidator, ValidationError
 
 
 class MCPServer:
@@ -237,30 +238,84 @@ class MCPServer:
         return tools_list
     
     def _validate_parameters(self, parameters: Dict[str, Any], schema: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate parameters against a schema."""
-        # Check required parameters
-        required = schema.get("required", [])
-        for req_param in required:
-            if req_param not in parameters:
+        """Validate parameters against a schema with comprehensive security checks."""
+        try:
+            # Check required parameters
+            required = schema.get("required", [])
+            for req_param in required:
+                if req_param not in parameters:
+                    return {
+                        "valid": False,
+                        "error": f"Missing required parameter: {req_param}"
+                    }
+            
+            # Check for unexpected parameters
+            allowed_params = set(schema.get("properties", {}).keys())
+            provided_params = set(parameters.keys())
+            unexpected = provided_params - allowed_params
+            if unexpected:
                 return {
                     "valid": False,
-                    "error": f"Missing required parameter: {req_param}"
+                    "error": f"Unexpected parameters: {', '.join(unexpected)}"
                 }
-        
-        # Check for unexpected parameters
-        allowed_params = set(schema.get("properties", {}).keys())
-        provided_params = set(parameters.keys())
-        unexpected = provided_params - allowed_params
-        if unexpected:
+            
+            # Validate and sanitize each parameter based on type
+            properties = schema.get("properties", {})
+            for param_name, param_value in parameters.items():
+                if param_name not in properties:
+                    continue
+                
+                param_schema = properties[param_name]
+                param_type = param_schema.get("type")
+                
+                # Type-specific validation
+                if param_type == "string":
+                    # Check for enum constraint
+                    if "enum" in param_schema:
+                        SecurityValidator.validate_enum(param_value, param_schema["enum"])
+                    else:
+                        # Determine max length based on context
+                        max_length = 10000 if param_name != "text" else 100000
+                        parameters[param_name] = SecurityValidator.sanitize_string(
+                            param_value, max_length
+                        )
+                
+                elif param_type == "integer":
+                    minimum = param_schema.get("minimum", -1000000)
+                    maximum = param_schema.get("maximum", 1000000)
+                    parameters[param_name] = SecurityValidator.validate_integer(
+                        param_value, minimum, maximum
+                    )
+                
+                elif param_type == "number":
+                    parameters[param_name] = SecurityValidator.validate_number(param_value)
+                
+                else:
+                    # For other types, ensure basic type checking
+                    if param_type == "boolean" and not isinstance(param_value, bool):
+                        return {
+                            "valid": False,
+                            "error": f"Parameter '{param_name}' must be boolean"
+                        }
+            
+            return {"valid": True, "sanitized_parameters": parameters}
+            
+        except ValidationError as e:
             return {
                 "valid": False,
-                "error": f"Unexpected parameters: {', '.join(unexpected)}"
+                "error": f"Validation error: {str(e)}"
             }
-        
-        return {"valid": True}
     
     def execute_tool(self, tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute a tool with given parameters."""
+        """Execute a tool with given parameters after validation and sanitization."""
+        try:
+            # Validate tool name
+            tool_name = SecurityValidator.validate_tool_name(tool_name)
+        except ValidationError as e:
+            return {
+                "error": f"Invalid tool name: {str(e)}"
+            }
+        
         if tool_name not in self.tools:
             return {
                 "error": f"Tool '{tool_name}' not found",
@@ -279,9 +334,12 @@ class MCPServer:
                 "expected_parameters": tool_schema
             }
         
+        # Use sanitized parameters from validation
+        sanitized_params = validation_result.get("sanitized_parameters", parameters)
+        
         try:
             # Only pass validated parameters that are defined in the schema
-            validated_params = {k: v for k, v in parameters.items() 
+            validated_params = {k: v for k, v in sanitized_params.items() 
                               if k in tool_schema.get("properties", {})}
             result = handler(**validated_params)
             return result
