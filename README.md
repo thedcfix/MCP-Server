@@ -88,6 +88,29 @@ To add a new tool to the MCP server:
 3. Register the tool in the `_register_tools()` method with its metadata
 4. The tool will automatically appear in the web GUI
 
+## Security
+
+This MCP-Server implements comprehensive security measures to protect against common vulnerabilities:
+
+- **Input Validation**: All inputs are validated and sanitized
+- **Command Injection Protection**: Dangerous patterns are blocked
+- **XSS Prevention**: HTML escaping and CSP headers
+- **Rate Limiting**: Protection against DoS attacks
+- **Security Headers**: Multiple security headers on all responses
+- **Type Safety**: Strict type checking and bounds validation
+
+For detailed security information, see [SECURITY.md](SECURITY.md).
+
+### Running Security Tests
+
+```bash
+# Run security unit tests
+python3 test_security.py
+
+# Run integration tests
+python3 test_integration.py
+```
+
 ## License
 
 MIT License
