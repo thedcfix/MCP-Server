@@ -352,8 +352,9 @@ class TestFlaskIntegration(unittest.TestCase):
     
     def test_large_payload_rejected(self):
         """Test that large payloads are rejected."""
-        # Create a large payload (over 1MB)
-        large_text = "x" * (2 * 1024 * 1024)  # 2MB
+        # Create a large payload (slightly over 1MB limit)
+        # Using 1.1MB instead of 2MB for efficiency
+        large_text = "x" * int(1.1 * 1024 * 1024)
         
         payload = {
             "tool_name": "text_analyzer",

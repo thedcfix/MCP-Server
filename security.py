@@ -6,10 +6,11 @@ Implements comprehensive security controls to prevent command injection and othe
 import re
 import html
 import json
+import time
+import threading
 from typing import Any, Dict, List, Optional, Union
 from functools import wraps
 from flask import request, jsonify
-import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -25,10 +26,11 @@ MAX_ARRAY_LENGTH = 1000
 MAX_OBJECT_DEPTH = 10
 
 # Dangerous patterns that could indicate injection attempts
+# Using re.IGNORECASE in checks to prevent case-based bypasses
 DANGEROUS_PATTERNS = [
     r'[;&|`$(){}]',  # Shell metacharacters and braces
     r'\.\.[/\\]',    # Path traversal
-    r'<script',  # XSS attempts
+    r'<script\b',    # XSS attempts - matches <script but not <scripts
     r'javascript:',  # XSS
     r'on\w+\s*=',  # Event handlers
     r'eval\s*\(',  # Code evaluation
@@ -39,7 +41,10 @@ DANGEROUS_PATTERNS = [
 ]
 
 # Rate limiting storage
+# Note: For production use with multiple workers, consider using Redis or memcached
+# This in-memory storage is suitable for single-worker development/testing
 rate_limit_storage = defaultdict(list)
+rate_limit_lock = threading.Lock()
 
 
 class ValidationError(Exception):
@@ -273,6 +278,7 @@ class RateLimiter:
     def is_allowed(self, identifier: str) -> bool:
         """
         Check if request is allowed based on rate limit.
+        Thread-safe implementation using locks.
         
         Args:
             identifier: Unique identifier for the client
@@ -283,19 +289,21 @@ class RateLimiter:
         now = time.time()
         cutoff = now - self.window_seconds
         
-        # Clean old requests
-        rate_limit_storage[identifier] = [
-            timestamp for timestamp in rate_limit_storage[identifier]
-            if timestamp > cutoff
-        ]
-        
-        # Check if limit exceeded
-        if len(rate_limit_storage[identifier]) >= self.max_requests:
-            return False
-        
-        # Add current request
-        rate_limit_storage[identifier].append(now)
-        return True
+        # Use lock for thread-safe access to shared storage
+        with rate_limit_lock:
+            # Clean old requests
+            rate_limit_storage[identifier] = [
+                timestamp for timestamp in rate_limit_storage[identifier]
+                if timestamp > cutoff
+            ]
+            
+            # Check if limit exceeded
+            if len(rate_limit_storage[identifier]) >= self.max_requests:
+                return False
+            
+            # Add current request
+            rate_limit_storage[identifier].append(now)
+            return True
 
 
 def rate_limit(max_requests: int = 100, window_seconds: int = 60):
@@ -364,6 +372,10 @@ def add_security_headers(response):
     """
     Add security headers to response.
     
+    Note: CSP currently allows 'unsafe-inline' for backward compatibility with
+    existing inline scripts/styles in the HTML template. For production use,
+    consider refactoring inline scripts to external files or using CSP nonces.
+    
     Args:
         response: Flask response object
         
@@ -373,6 +385,8 @@ def add_security_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['X-XSS-Protection'] = '1; mode=block'
+    # Note: 'unsafe-inline' is used here for compatibility with the template
+    # For enhanced security, refactor inline scripts/styles and use nonces
     response.headers['Content-Security-Policy'] = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline'; "
