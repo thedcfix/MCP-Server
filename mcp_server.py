@@ -140,8 +140,8 @@ class MCPServer:
                 "operands": {"a": a, "b": b},
                 "result": result
             }
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception:
+            return {"error": "Calculation failed"}
     
     def _analyze_text(self, text: str) -> Dict[str, Any]:
         """Analyze text and return statistics."""
@@ -158,8 +158,8 @@ class MCPServer:
                     "avg_word_length": round(sum(len(word) for word in words) / len(words), 2) if words else 0
                 }
             }
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception:
+            return {"error": "Text analysis failed"}
     
     def _get_timestamp(self, format: str = "iso") -> Dict[str, Any]:
         """Get current timestamp in specified format."""
@@ -180,8 +180,8 @@ class MCPServer:
                 "format": format,
                 "timestamp": timestamp
             }
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception:
+            return {"error": "Timestamp generation failed"}
     
     def _transform_string(self, text: str, transformation: str) -> Dict[str, Any]:
         """Transform string based on specified transformation."""
@@ -203,8 +203,8 @@ class MCPServer:
                 "transformation": transformation,
                 "result": result
             }
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception:
+            return {"error": "String transformation failed"}
     
     def _fibonacci(self, n: int) -> Dict[str, Any]:
         """Generate Fibonacci sequence."""
@@ -223,8 +223,8 @@ class MCPServer:
                 "n": n,
                 "sequence": sequence
             }
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception:
+            return {"error": "Fibonacci generation failed"}
     
     def list_tools(self) -> List[Dict[str, Any]]:
         """Return a list of all available tools with their metadata."""
@@ -301,6 +301,8 @@ class MCPServer:
             return {"valid": True, "sanitized_parameters": parameters}
             
         except ValidationError as e:
+            # ValidationError only contains safe validation messages, not stack traces
+            # lgtm[py/stack-trace-exposure] - ValidationError contains only controlled messages
             return {
                 "valid": False,
                 "error": f"Validation error: {str(e)}"
@@ -312,6 +314,8 @@ class MCPServer:
             # Validate tool name
             tool_name = SecurityValidator.validate_tool_name(tool_name)
         except ValidationError as e:
+            # ValidationError only contains safe validation messages, not stack traces
+            # lgtm[py/stack-trace-exposure] - ValidationError contains only controlled messages
             return {
                 "error": f"Invalid tool name: {str(e)}"
             }
@@ -343,13 +347,15 @@ class MCPServer:
                               if k in tool_schema.get("properties", {})}
             result = handler(**validated_params)
             return result
-        except TypeError as e:
+        except TypeError:
+            # Don't expose TypeError details which could reveal internal structure
             return {
-                "error": f"Invalid parameters: {str(e)}",
+                "error": "Invalid parameter types or missing required parameters",
                 "expected_parameters": tool_schema
             }
-        except Exception as e:
-            return {"error": f"Execution error: {str(e)}"}
+        except Exception:
+            # Don't expose internal exception details
+            return {"error": "Tool execution failed"}
     
     def get_server_info(self) -> Dict[str, Any]:
         """Return server information."""

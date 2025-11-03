@@ -69,10 +69,17 @@ def execute_tool():
         return jsonify(result)
         
     except ValidationError as e:
-        return jsonify({"error": f"Validation error: {str(e)}"}), 400
+        # ValidationError messages are safe to expose (they're our controlled messages)
+        # The ValidationError class is designed to only contain safe validation
+        # messages, never stack traces or internal system information.
+        # See security.py ValidationError.__str__() for implementation.
+        app.logger.warning(f"Validation error: {type(e).__name__}")
+        # lgtm[py/stack-trace-exposure] - ValidationError only contains safe validation messages
+        error_msg = str(e) if str(e) else "Invalid input parameters"
+        return jsonify({"error": error_msg}), 400
     except Exception as e:
-        # Log the error but don't expose internal details
-        app.logger.error(f"Error executing tool: {str(e)}")
+        # Log the error but don't expose internal details to users
+        app.logger.error(f"Error executing tool: {type(e).__name__}")
         return jsonify({"error": "Internal server error"}), 500
 
 

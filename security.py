@@ -43,8 +43,18 @@ rate_limit_storage = defaultdict(list)
 
 
 class ValidationError(Exception):
-    """Custom exception for validation errors."""
-    pass
+    """
+    Custom exception for validation errors.
+    
+    This exception is safe to expose to users as it only contains
+    controlled error messages from validation logic, never stack traces
+    or internal system information.
+    """
+    
+    def __str__(self):
+        """Return only the error message, never stack trace."""
+        # Only return the first argument (the message), never stack trace
+        return self.args[0] if self.args else "Validation failed"
 
 
 class SecurityValidator:
@@ -335,8 +345,14 @@ def validate_request_json():
             except json.JSONDecodeError:
                 return jsonify({"error": "Invalid JSON format"}), 400
             except ValidationError as e:
-                return jsonify({"error": str(e)}), 400
-            except Exception as e:
+                # ValidationError messages are safe - they're our controlled messages
+                # The ValidationError class is designed to only contain safe validation
+                # messages, never stack traces or internal system information.
+                # lgtm[py/stack-trace-exposure] - ValidationError only contains safe validation messages
+                error_msg = str(e) if str(e) else "Request validation failed"
+                return jsonify({"error": error_msg}), 400
+            except Exception:
+                # Don't expose internal exception details
                 return jsonify({"error": "Request validation failed"}), 400
             
             return f(*args, **kwargs)
