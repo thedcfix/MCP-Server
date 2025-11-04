@@ -6,6 +6,17 @@ import json
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 import math
+import subprocess
+import threading
+import time
+
+
+# Security Configuration Constants
+MAX_COMMAND_TIMEOUT = 300  # Maximum 5 minutes
+DEFAULT_COMMAND_TIMEOUT = 30  # Default 30 seconds
+MAX_OUTPUT_SIZE = 1024 * 1024  # 1 MB max output
+MAX_TEXT_SIZE = 100 * 1024  # 100 KB max text input
+MAX_CONCURRENT_COMMANDS = 5  # Max concurrent shell commands
 
 
 class MCPServer:
@@ -18,6 +29,9 @@ class MCPServer:
             "version": "1.0.0",
             "description": "A simple MCP server with example tools"
         }
+        self._command_semaphore = threading.Semaphore(MAX_CONCURRENT_COMMANDS)
+        self._active_processes = []
+        self._process_lock = threading.Lock()
     
     def _register_tools(self) -> Dict[str, Dict[str, Any]]:
         """Register all available tools with their metadata."""
@@ -114,6 +128,32 @@ class MCPServer:
                     "required": ["n"]
                 },
                 "handler": self._fibonacci
+            },
+            "execute_command": {
+                "name": "execute_command",
+                "description": "Execute a shell command with timeout and output limits (SECURITY: Commands are limited to prevent resource exhaustion)",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "The shell command to execute"
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": f"Timeout in seconds (default: {DEFAULT_COMMAND_TIMEOUT}, max: {MAX_COMMAND_TIMEOUT})",
+                            "minimum": 1,
+                            "maximum": MAX_COMMAND_TIMEOUT,
+                            "default": DEFAULT_COMMAND_TIMEOUT
+                        },
+                        "working_dir": {
+                            "type": "string",
+                            "description": "Working directory for command execution (optional)"
+                        }
+                    },
+                    "required": ["command"]
+                },
+                "handler": self._execute_command
             }
         }
     
@@ -145,6 +185,12 @@ class MCPServer:
     def _analyze_text(self, text: str) -> Dict[str, Any]:
         """Analyze text and return statistics."""
         try:
+            # Security: Prevent resource exhaustion with large text inputs
+            if len(text) > MAX_TEXT_SIZE:
+                return {
+                    "error": f"Text too large. Maximum size is {MAX_TEXT_SIZE} bytes ({MAX_TEXT_SIZE // 1024} KB)"
+                }
+            
             words = text.split()
             sentences = text.count('.') + text.count('!') + text.count('?')
             
@@ -225,6 +271,111 @@ class MCPServer:
         except Exception as e:
             return {"error": str(e)}
     
+    def _execute_command(self, command: str, timeout: int = DEFAULT_COMMAND_TIMEOUT, 
+                        working_dir: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Execute a shell command with security controls.
+        
+        Security features:
+        - Enforced timeout to prevent infinite execution
+        - Output size limit to prevent memory exhaustion
+        - Concurrent execution limit to prevent resource exhaustion
+        - Process cleanup to prevent zombie processes
+        """
+        # Validate timeout
+        if timeout > MAX_COMMAND_TIMEOUT:
+            timeout = MAX_COMMAND_TIMEOUT
+        elif timeout < 1:
+            timeout = DEFAULT_COMMAND_TIMEOUT
+        
+        # Basic input validation
+        if not command or not command.strip():
+            return {"error": "Command cannot be empty"}
+        
+        # Check concurrent execution limit
+        if not self._command_semaphore.acquire(blocking=False):
+            return {
+                "error": f"Maximum concurrent command limit reached ({MAX_CONCURRENT_COMMANDS}). Please try again later."
+            }
+        
+        process = None
+        try:
+            # Start the process
+            start_time = time.time()
+            process = subprocess.Popen(
+                command,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=working_dir,
+                text=True,
+                # Security: Prevent shell from hanging on input
+                stdin=subprocess.DEVNULL
+            )
+            
+            with self._process_lock:
+                self._active_processes.append(process)
+            
+            try:
+                stdout_data, stderr_data = process.communicate(timeout=timeout)
+                
+                # Check output size limits
+                if len(stdout_data) > MAX_OUTPUT_SIZE:
+                    stdout_data = stdout_data[:MAX_OUTPUT_SIZE] + f"\n... (output truncated at {MAX_OUTPUT_SIZE} bytes)"
+                if len(stderr_data) > MAX_OUTPUT_SIZE:
+                    stderr_data = stderr_data[:MAX_OUTPUT_SIZE] + f"\n... (output truncated at {MAX_OUTPUT_SIZE} bytes)"
+                
+                execution_time = time.time() - start_time
+                
+                return {
+                    "success": True,
+                    "command": command,
+                    "exit_code": process.returncode,
+                    "stdout": stdout_data,
+                    "stderr": stderr_data,
+                    "execution_time": round(execution_time, 2),
+                    "timeout": timeout,
+                    "truncated": len(stdout_data) > MAX_OUTPUT_SIZE or len(stderr_data) > MAX_OUTPUT_SIZE
+                }
+                
+            except subprocess.TimeoutExpired:
+                # Kill the process if it times out
+                process.kill()
+                try:
+                    stdout_data, stderr_data = process.communicate(timeout=5)
+                except:
+                    stdout_data, stderr_data = "", ""
+                
+                return {
+                    "success": False,
+                    "error": f"Command execution timed out after {timeout} seconds",
+                    "command": command,
+                    "timeout": timeout,
+                    "stdout": stdout_data[:MAX_OUTPUT_SIZE] if stdout_data else "",
+                    "stderr": stderr_data[:MAX_OUTPUT_SIZE] if stderr_data else ""
+                }
+                
+        except Exception as e:
+            # Clean up process if it exists
+            if process and process.poll() is None:
+                try:
+                    process.kill()
+                    process.wait(timeout=5)
+                except:
+                    pass
+            
+            return {
+                "success": False,
+                "error": f"Command execution failed: {str(e)}",
+                "command": command
+            }
+        finally:
+            # Always release the semaphore and clean up
+            with self._process_lock:
+                if process in self._active_processes:
+                    self._active_processes.remove(process)
+            self._command_semaphore.release()
+    
     def list_tools(self) -> List[Dict[str, Any]]:
         """Return a list of all available tools with their metadata."""
         tools_list = []
@@ -298,8 +449,29 @@ class MCPServer:
         return {
             **self.server_info,
             "tool_count": len(self.tools),
-            "tools": [t["name"] for t in self.list_tools()]
+            "tools": [t["name"] for t in self.list_tools()],
+            "security": {
+                "max_command_timeout": MAX_COMMAND_TIMEOUT,
+                "default_command_timeout": DEFAULT_COMMAND_TIMEOUT,
+                "max_output_size": MAX_OUTPUT_SIZE,
+                "max_text_size": MAX_TEXT_SIZE,
+                "max_concurrent_commands": MAX_CONCURRENT_COMMANDS
+            }
         }
+    
+    def cleanup(self):
+        """Clean up all active processes."""
+        with self._process_lock:
+            processes_to_clean = self._active_processes.copy()
+            self._active_processes.clear()
+        
+        for process in processes_to_clean:
+            if process.poll() is None:
+                try:
+                    process.kill()
+                    process.wait(timeout=5)
+                except:
+                    pass
 
 
 # Global MCP server instance

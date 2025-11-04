@@ -10,6 +10,7 @@ This is a simple MCP server implementation that exposes various tools through a 
 - **timestamp**: Get current timestamp in various formats
 - **string_transform**: Transform strings (uppercase, lowercase, reverse, title case)
 - **fibonacci**: Generate Fibonacci sequence
+- **execute_command**: Execute shell commands with security protections (timeout, output limits, concurrent execution limits)
 
 ## Installation
 
@@ -87,6 +88,37 @@ To add a new tool to the MCP server:
 2. Add a new method to handle the tool (e.g., `_my_tool`)
 3. Register the tool in the `_register_tools()` method with its metadata
 4. The tool will automatically appear in the web GUI
+
+## Security Features
+
+This MCP server implements multiple security measures to prevent resource exhaustion attacks (CWE-400):
+
+### Command Execution Security
+- **Timeout Enforcement**: All shell commands have configurable timeouts (default: 30s, max: 300s)
+- **Output Size Limits**: Command output is limited to 1 MB to prevent memory exhaustion
+- **Concurrent Execution Limits**: Maximum of 5 concurrent shell commands
+- **Process Cleanup**: Automatic cleanup of timed-out or failed processes
+- **Input Sanitization**: Commands cannot read from stdin to prevent hanging
+
+### Resource Limits
+- **Text Input Limits**: Text analysis limited to 100 KB to prevent processing large inputs
+- **Output Truncation**: Large outputs are automatically truncated with warnings
+- **Fibonacci Limit**: Fibonacci sequence generation limited to 50 numbers
+
+### Best Practices
+When using the `execute_command` tool:
+1. Always set appropriate timeout values for your use case
+2. Be aware that output exceeding 1 MB will be truncated
+3. Long-running processes will be terminated when they exceed the timeout
+4. Commands that require user input will fail (stdin is disabled)
+
+### Security Configuration
+The following limits are enforced:
+- `MAX_COMMAND_TIMEOUT`: 300 seconds (5 minutes)
+- `DEFAULT_COMMAND_TIMEOUT`: 30 seconds
+- `MAX_OUTPUT_SIZE`: 1 MB
+- `MAX_TEXT_SIZE`: 100 KB
+- `MAX_CONCURRENT_COMMANDS`: 5
 
 ## License
 
