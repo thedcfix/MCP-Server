@@ -31,6 +31,7 @@ class MCPServer:
         }
         self._command_semaphore = threading.Semaphore(MAX_CONCURRENT_COMMANDS)
         self._active_processes = []
+        self._process_lock = threading.Lock()
     
     def _register_tools(self) -> Dict[str, Dict[str, Any]]:
         """Register all available tools with their metadata."""
@@ -312,13 +313,8 @@ class MCPServer:
                 stdin=subprocess.DEVNULL
             )
             
-            self._active_processes.append(process)
-            
-            # Read output with size limit
-            stdout_chunks = []
-            stderr_chunks = []
-            stdout_size = 0
-            stderr_size = 0
+            with self._process_lock:
+                self._active_processes.append(process)
             
             try:
                 stdout_data, stderr_data = process.communicate(timeout=timeout)
@@ -339,7 +335,7 @@ class MCPServer:
                     "stderr": stderr_data,
                     "execution_time": round(execution_time, 2),
                     "timeout": timeout,
-                    "truncated": len(stdout_data) >= MAX_OUTPUT_SIZE or len(stderr_data) >= MAX_OUTPUT_SIZE
+                    "truncated": len(stdout_data) > MAX_OUTPUT_SIZE or len(stderr_data) > MAX_OUTPUT_SIZE
                 }
                 
             except subprocess.TimeoutExpired:
@@ -375,8 +371,9 @@ class MCPServer:
             }
         finally:
             # Always release the semaphore and clean up
-            if process in self._active_processes:
-                self._active_processes.remove(process)
+            with self._process_lock:
+                if process in self._active_processes:
+                    self._active_processes.remove(process)
             self._command_semaphore.release()
     
     def list_tools(self) -> List[Dict[str, Any]]:
@@ -464,14 +461,17 @@ class MCPServer:
     
     def cleanup(self):
         """Clean up all active processes."""
-        for process in self._active_processes:
+        with self._process_lock:
+            processes_to_clean = self._active_processes.copy()
+            self._active_processes.clear()
+        
+        for process in processes_to_clean:
             if process.poll() is None:
                 try:
                     process.kill()
                     process.wait(timeout=5)
                 except:
                     pass
-        self._active_processes.clear()
 
 
 # Global MCP server instance
